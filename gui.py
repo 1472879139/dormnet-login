@@ -31,6 +31,87 @@ OPERATOR_LABELS = list(OPERATOR_MAP.values())
 OPERATOR_KEYS = list(OPERATOR_MAP.keys())
 
 
+class PopupNotification:
+    """居中弹窗通知 — 带"确定"按钮，用户手动关闭
+
+    用法:
+        PopupNotification.show(parent, "标题", "消息内容", "success")
+        类型: "success" | "error" | "warning" | "info"
+    """
+
+    # (标题栏背景, 消息区背景, 前景色, 图标)
+    _STYLES = {
+        "success": ("#e8f5e9", "#c8e6c9", "#2e7d32", "✅"),
+        "error":   ("#fce4ec", "#ffcdd2", "#c62828", "❌"),
+        "warning": ("#fff3e0", "#ffe0b2", "#e65100", "⚠"),
+        "info":    ("#e3f2fd", "#bbdefb", "#1565c0", "ℹ"),
+    }
+
+    @classmethod
+    def show(cls, parent: tk.Tk, title: str, message: str, popup_type: str = "info") -> None:
+        """显示居中弹窗，阻塞父窗口直到用户点击确定"""
+        bg_title, bg_msg, fg, icon = cls._STYLES.get(
+            popup_type, cls._STYLES["info"]
+        )
+
+        dlg = tk.Toplevel(parent)
+        dlg.title(title)
+        dlg.resizable(False, False)
+        dlg.transient(parent)         # 从属于父窗口
+        dlg.grab_set()                # 模态: 阻止操作父窗口
+
+        # 内容区域
+        frame = tk.Frame(dlg, bg=bg_msg, padx=20, pady=16)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        # 图标 + 消息
+        inner = tk.Frame(frame, bg=bg_msg)
+        inner.pack()
+
+        tk.Label(
+            inner, text=icon, bg=bg_msg,
+            font=("Microsoft YaHei UI", 18),
+        ).pack(side=tk.LEFT, padx=(0, 10))
+
+        tk.Label(
+            inner, text=message, bg=bg_msg, fg=fg,
+            font=("Microsoft YaHei UI", 10),
+            wraplength=360, justify=tk.LEFT,
+        ).pack(side=tk.LEFT)
+
+        # 确定按钮
+        btn_frame = tk.Frame(frame, bg=bg_msg)
+        btn_frame.pack(pady=(12, 0))
+
+        btn = tk.Button(
+            btn_frame, text="确定", width=12,
+            command=dlg.destroy,
+            bg=bg_title, fg=fg, activebackground=bg_title,
+            font=("Microsoft YaHei UI", 9),
+            relief="raised", bd=1,
+        )
+        btn.pack()
+        btn.focus_set()
+
+        # 绑定 Enter 键关闭
+        dlg.bind("<Return>", lambda e: dlg.destroy())
+
+        # 居中于父窗口
+        dlg.update_idletasks()
+        pw = parent.winfo_width()
+        ph = parent.winfo_height()
+        px = parent.winfo_rootx()
+        py = parent.winfo_rooty()
+        dw = dlg.winfo_reqwidth()
+        dh = dlg.winfo_reqheight()
+        x = px + (pw - dw) // 2
+        y = py + (ph - dh) // 2
+        dlg.geometry(f"+{x}+{y}")
+
+        # 等待弹窗关闭
+        dlg.wait_window()
+
+
 class CquptLoginGUI:
     """CQUPT 校园网登录主窗口"""
 
@@ -50,6 +131,7 @@ class CquptLoginGUI:
         self._is_logged_in = False
         self._is_logging = False       # 正在登录/注销中，防止重复点击
         self._keep_alive_job: Optional[str] = None  # after() job ID
+        self._startup_auth_checked = False  # 启动认证检测是否完成
 
         # 加载配置
         self._config = self._config_mgr.load()
@@ -82,6 +164,10 @@ class CquptLoginGUI:
         # 如果 silent 模式，最小化到任务栏
         if silent:
             self._root.iconify()
+
+        # 启动时检测认证状态 (后台线程，避免阻塞 UI)
+        thread = threading.Thread(target=self._detect_auth_status, daemon=True)
+        thread.start()
 
     def run(self):
         """启动 GUI 主循环"""
@@ -340,9 +426,71 @@ class CquptLoginGUI:
     # 事件处理
     # ------------------------------------------------------------------
 
+    def _detect_auth_status(self):
+        """后台线程: 检测启动时的认证状态"""
+        try:
+            status = self._client.check_auth_status()
+        except Exception:
+            status = "offline"
+        self._root.after(0, self._on_startup_auth_detected, status)
+
+    def _on_startup_auth_detected(self, status: str):
+        """主线程回调: 处理启动时认证状态检测结果"""
+        self._startup_auth_checked = True
+
+        if status == "authenticated":
+            self._is_logged_in = True
+            self._draw_status_dot("green")
+            self._status_text.set("● 已连接")
+            self._login_button.configure(state=tk.DISABLED)
+
+            # 尝试恢复缓存的网络参数，使注销按钮可用
+            params = self._config_mgr.load_network_params()
+            if params:
+                self._client.set_cached_params(params)
+                self._logout_button.configure(state=tk.NORMAL)
+                self._set_message("检测到已认证状态，可直接注销", "green")
+            else:
+                self._logout_button.configure(state=tk.DISABLED)
+                self._set_message(
+                    "检测到已认证状态，但缺少网络参数无法注销。"
+                    "请先通过浏览器注销后重新使用本程序登录",
+                    "orange",
+                )
+
+        elif status == "not_authenticated":
+            self._is_logged_in = False
+            self._draw_status_dot("gray")
+            self._status_text.set("未认证")
+            self._login_button.configure(state=tk.NORMAL)
+            self._logout_button.configure(state=tk.DISABLED)
+            self._set_message("未登录认证，请点击登录", "gray")
+
+        else:  # offline
+            self._is_logged_in = False
+            self._draw_status_dot("red")
+            self._status_text.set("○ 未连接")
+            self._login_button.configure(state=tk.NORMAL)
+            self._logout_button.configure(state=tk.DISABLED)
+            self._set_message("未检测到校园网连接", "red")
+
     def _on_login(self):
         """点击登录按钮"""
         if self._is_logging:
+            return
+
+        # 启动检测未完成时阻止操作
+        if not self._startup_auth_checked:
+            self._set_message("正在检测网络状态，请稍候...", "blue")
+            return
+
+        # 拦截重复登录
+        if self._is_logged_in:
+            self._show_popup(
+                "提示",
+                "已处于认证状态，无需重复登录。\n如需重新登录，请先点击注销。",
+                "warning",
+            )
             return
 
         username = self._username_var.get().strip()
@@ -402,6 +550,13 @@ class CquptLoginGUI:
         self._login_button.configure(state=tk.DISABLED)
         self._logout_button.configure(state=tk.NORMAL)
 
+        # 持久化网络参数，使跨会话注销可用
+        params = self._client.get_cached_params()
+        if params:
+            self._config_mgr.save_network_params(params)
+
+        self._show_popup("登录成功", message, "success")
+
     def _on_login_failed(self, error: str):
         """登录失败回调 (主线程)"""
         self._is_logged_in = False
@@ -410,9 +565,17 @@ class CquptLoginGUI:
         self._status_text.set("○ 连接失败")
         self._set_message(f"❌ {error}", "red")
 
+        self._show_popup("登录失败", error, "error")
+
     def _on_logout(self):
         """点击注销按钮"""
         if self._is_logging:
+            return
+
+        # 如果缺少网络参数则无法注销
+        if self._client.get_cached_params() is None:
+            self._set_message("缺少网络参数，无法注销", "orange")
+            self._show_popup("无法注销", "缺少网络参数，需先通过本程序登录一次后才能使用注销功能", "warning")
             return
 
         username = self._username_var.get().strip()
@@ -450,16 +613,24 @@ class CquptLoginGUI:
         self._is_logged_in = False
         self._set_logging_state(False)
         self._draw_status_dot("gray")
-        self._status_text.set("未连接")
+        self._status_text.set("未认证")
         self._set_message(f"✅ {message}", "gray")
 
         self._login_button.configure(state=tk.NORMAL)
         self._logout_button.configure(state=tk.DISABLED)
 
+        # 清除缓存的网络参数
+        self._config_mgr.clear_network_params()
+        self._client.set_cached_params(None)
+
+        self._show_popup("注销成功", message, "success")
+
     def _on_logout_failed(self, error: str):
         """注销失败回调 (主线程)"""
         self._set_logging_state(False)
         self._set_message(f"⚠ 注销失败: {error}", "orange")
+
+        self._show_popup("注销失败", error, "warning")
 
     def _on_auto_start_toggle(self):
         """开机自启开关切换"""
@@ -555,6 +726,10 @@ class CquptLoginGUI:
             2, 2, 12, 12, fill=color, outline=""
         )
 
+    def _show_popup(self, title: str, message: str, popup_type: str = "info") -> None:
+        """显示居中弹窗通知"""
+        PopupNotification.show(self._root, title, message, popup_type)
+
     def _toggle_password_visibility(self):
         """切换密码显示/隐藏"""
         if self._show_password.get():
@@ -607,7 +782,14 @@ class CquptLoginGUI:
         self._schedule_keep_alive(int(interval_ms))
 
     def _do_keep_alive_check(self):
-        """后台执行重连检查"""
+        """后台执行重连检查 — 先探测认证状态，仅断线时重新登录"""
+        # 已认证则跳过，避免不必要的重复登录请求
+        try:
+            if self._client.check_auth_status() == "authenticated":
+                return
+        except Exception:
+            pass  # 探测失败继续尝试登录
+
         config = self._config_mgr.load_credentials()
         username = config.get("username")
         password = config.get("password")
@@ -616,14 +798,30 @@ class CquptLoginGUI:
             return
 
         try:
-            self._client.login(
+            message = self._client.login(
                 username=username,
                 password=password,
                 device=config["device"],
                 operator=config["operator"],
             )
+            self._root.after(0, self._on_keep_alive_reconnect, message)
         except LoginError:
             pass  # 静默重试，下次定时器会自动再试
+
+    def _on_keep_alive_reconnect(self, message: str):
+        """断线重连成功回调 (主线程) — 仅在 GUI 状态与实际不一致时更新"""
+        if not self._is_logged_in:
+            self._is_logged_in = True
+            self._draw_status_dot("green")
+            self._status_text.set("● 已连接")
+            self._login_button.configure(state=tk.DISABLED)
+            self._logout_button.configure(state=tk.NORMAL)
+            self._set_message("断线已自动重连", "green")
+
+            # 更新持久化的网络参数
+            params = self._client.get_cached_params()
+            if params:
+                self._config_mgr.save_network_params(params)
 
     def _stop_keep_alive(self):
         """停止断线重连定时器"""

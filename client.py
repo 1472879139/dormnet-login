@@ -48,6 +48,46 @@ class CquptClient:
     # 公共接口
     # ------------------------------------------------------------------
 
+    def get_cached_params(self) -> Optional[dict]:
+        """获取登录时缓存的网络参数 (供跨会话持久化使用)"""
+        return self._cached_params
+
+    def set_cached_params(self, params: Optional[dict]) -> None:
+        """恢复缓存的网络参数 (从配置文件恢复，供跨会话注销使用)"""
+        self._cached_params = params
+
+    def check_auth_status(self) -> str:
+        """
+        检测当前网络认证状态 (不依赖缓存)
+
+        利用校园网强制门户机制: 未认证时外部 HTTP 请求会被 302 重定向到认证页面;
+        已认证时请求直接到达目标服务器返回 200。
+
+        返回:
+            "authenticated"     - 已认证 (HTTP 请求直接成功，无重定向)
+            "not_authenticated" - 未认证 (触发 302 重定向，在校园网内但未登录)
+            "offline"           - 不在校园网环境 (所有探测地址均网络错误)
+        """
+        saw_redirect = False
+
+        for probe_url in PROBE_URLS:
+            req = urllib.request.Request(probe_url, method="GET")
+            opener = urllib.request.build_opener(_NoRedirectHandler)
+            try:
+                opener.open(req, timeout=self._timeout)
+                # 请求直接成功 = 无拦截 = 已认证
+                return "authenticated"
+            except urllib.error.HTTPError as e:
+                if e.code in (301, 302, 303, 307, 308):
+                    saw_redirect = True
+                # 继续探测下一个地址
+            except urllib.error.URLError:
+                # 该探测地址不可达，继续下一个
+                continue
+
+        # 所有探测结束: 看到过重定向 = 在校园网内但未认证; 否则 = 离线
+        return "not_authenticated" if saw_redirect else "offline"
+
     def get_network_params(self) -> dict:
         """
         第一步: 通过访问外部 HTTP 地址触发校园网强制门户重定向
