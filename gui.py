@@ -522,10 +522,10 @@ class CquptLoginGUI:
         self._root.after(0, self._on_refresh_done, status)
 
     def _on_refresh_done(self, status: str):
-        """刷新完成回调"""
+        """刷新完成回调 — 仅查看状态，不触发自动重连"""
         self._refresh_button.configure(state=tk.NORMAL, text="刷新")
-        self._on_status_update(status)
-        # 即使 _on_status_update 因状态未变而跳过，也更新消息提示刷新已完成
+        # allow_reconnect=False: 刷新只是查看，不干预
+        self._on_status_update(status, allow_reconnect=False)
         self._set_message(f"刷新完成 ({self._status_text.get()})", "gray")
 
     def _on_login(self):
@@ -854,8 +854,8 @@ class CquptLoginGUI:
 
         self._root.after(0, self._on_status_update, status)
 
-    def _on_status_update(self, status: str):
-        """根据检测到的认证状态更新 UI；如之前已登录但检测到断线则尝试自动重连"""
+    def _on_status_update(self, status: str, allow_reconnect: bool = True):
+        """根据检测到的认证状态更新 UI；allow_reconnect 为 True 时断线自动重连"""
         was_logged_in = self._is_logged_in
 
         if status == "authenticated":
@@ -869,8 +869,11 @@ class CquptLoginGUI:
             if was_logged_in:
                 # 被踢掉或手动在浏览器注销了
                 self._apply_logged_out_state()
-                self._set_message("检测到已断开，正在自动重连...", "orange")
-                self._try_auto_reconnect()
+                if allow_reconnect:
+                    self._set_message("检测到已断开，正在自动重连...", "orange")
+                    self._try_auto_reconnect()
+                else:
+                    self._set_message("已断开（手动刷新，未触发自动重连）", "orange")
             else:
                 # 从 offline 恢复，或持续未认证
                 self._apply_logged_out_state()
