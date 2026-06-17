@@ -186,9 +186,12 @@ class CquptClient:
         if operator not in OPERATOR_MAP:
             raise LoginError(f"不支持的运营商: {operator}")
 
-        # 第一步: 获取网络参数并缓存 (供注销时复用)
-        net_params = self.get_network_params()
-        self._cached_params = net_params
+        # 第一步: 获取网络参数 (优先复用缓存，避免因登录失败后重试时探测异常)
+        if self._cached_params:
+            net_params = self._cached_params
+        else:
+            net_params = self.get_network_params()
+            self._cached_params = net_params
 
         # 第二步: 构造登录请求
         dev = DEVICE_CONFIG[device]
