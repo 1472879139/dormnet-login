@@ -37,6 +37,11 @@ class NetworkParamsError(LoginError):
     pass
 
 
+class NetworkError(LoginError):
+    """网络层错误（超时、连接失败等）—— 请求可能已被服务器处理但响应未到达"""
+    pass
+
+
 class CquptClient:
     """CQUPT 校园网认证客户端"""
 
@@ -273,12 +278,24 @@ class CquptClient:
             "DNT": "1",
         }
 
-        return self._do_request(
-            url=LOGIN_URL,
-            params=params,
-            headers=headers,
-            operation="注销",
-        )
+        try:
+            return self._do_request(
+                url=LOGIN_URL,
+                params=params,
+                headers=headers,
+                operation="注销",
+            )
+        except NetworkError:
+            # 网络层错误（超时、连接重置等）：注销请求可能已被服务器处理，
+            # 但响应未到达客户端。通过检测认证状态确认实际结果，
+            # 避免"实际注销成功却提示失败"的误报。
+            try:
+                status = self.check_auth_status()
+                if status != "authenticated":
+                    return "注销成功（服务器无响应，已通过状态检测确认）"
+            except Exception:
+                pass
+            raise
 
     # ------------------------------------------------------------------
     # 内部实现
@@ -331,9 +348,9 @@ class CquptClient:
             with urllib.request.urlopen(req, timeout=self._timeout) as resp:
                 body = resp.read().decode("utf-8", errors="replace")
         except urllib.error.URLError as e:
-            raise LoginError(f"{operation}失败: 无法连接认证服务器 - {e.reason}")
+            raise NetworkError(f"{operation}失败: 无法连接认证服务器 - {e.reason}")
         except Exception as e:
-            raise LoginError(f"{operation}失败: {e}")
+            raise NetworkError(f"{operation}失败: {e}")
 
         return self._parse_response(body, operation)
 
