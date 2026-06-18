@@ -489,17 +489,12 @@ class CquptLoginGUI:
 
             # 尝试恢复缓存的网络参数，使注销按钮可用
             params = self._config_mgr.load_network_params()
-            if params:
-                self._client.set_cached_params(params)
-                self._logout_button.configure(state=tk.NORMAL)
-                self._set_message("检测到已认证状态，可直接注销", "green")
-            else:
-                self._logout_button.configure(state=tk.DISABLED)
-                self._set_message(
-                    "检测到已认证状态，但缺少网络参数无法注销。"
-                    "请先通过浏览器注销后重新使用本程序登录",
-                    "orange",
-                )
+            if not params:
+                # 无缓存时用本机 IP/MAC 构造兜底参数（注销只需要这两个值）
+                params = self._client.build_local_network_params()
+            self._client.set_cached_params(params)
+            self._logout_button.configure(state=tk.NORMAL)
+            self._set_message("检测到已认证状态，可直接注销", "green")
 
         elif status == "not_authenticated":
             self._is_logged_in = False
@@ -647,12 +642,6 @@ class CquptLoginGUI:
         if self._is_logging:
             return
 
-        # 如果缺少网络参数则无法注销
-        if self._client.get_cached_params() is None:
-            self._set_message("缺少网络参数，无法注销", "orange")
-            self._show_popup("无法注销", "缺少网络参数，需先通过本程序登录一次后才能使用注销功能", "warning")
-            return
-
         username = self._username_var.get().strip()
         password = self._password_var.get()
         config = self._collect_config()
@@ -730,8 +719,11 @@ class CquptLoginGUI:
     def _on_save_settings(self):
         """保存设置按钮"""
         config = self._collect_config()
-        self._config_mgr.save(config)
-        self._config = config
+        # 合并已有配置以保留内部字段（如 cached_network_params）
+        existing = self._config_mgr.load()
+        existing.update(config)
+        self._config_mgr.save(existing)
+        self._config = existing
         self._set_message("💾 设置已保存", "gray")
 
         # 同步 keep-alive 状态
@@ -925,16 +917,12 @@ class CquptLoginGUI:
 
         # 更新缓存的网络参数
         params = self._client.get_cached_params()
+        if not params:
+            # 无缓存时用本机 IP/MAC 构造兜底参数
+            params = self._client.build_local_network_params()
+            self._client.set_cached_params(params)
         if params:
             self._config_mgr.save_network_params(params)
-        elif not self._client.get_cached_params():
-            # 检测到外部登录，没有缓存参数，无法注销
-            self._logout_button.configure(state=tk.DISABLED)
-            self._set_message(
-                "检测到已认证状态，但缺少网络参数无法注销。"
-                "请先通过浏览器注销后重新使用本程序登录",
-                "orange",
-            )
 
     def _apply_logged_out_state(self):
         """将 GUI 切换到未登录状态，恢复输入控件可编辑"""

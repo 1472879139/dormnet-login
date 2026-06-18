@@ -13,9 +13,12 @@ CQUPT 校园网登录/注销 HTTP 客户端
 
 import base64
 import json
+import socket
+import subprocess
 import urllib.request
 import urllib.error
 import urllib.parse
+import uuid
 from http.client import HTTPResponse
 from typing import Optional
 
@@ -43,6 +46,33 @@ class NetworkError(LoginError):
     pass
 
 
+def _get_mac_for_ip(local_ip: str) -> str:
+    """通过 PowerShell 获取指定 IP 对应网卡的 MAC 地址
+
+    在 Hyper-V/VPN 等虚拟网卡存在时，uuid.getnode() 可能返回错误的 MAC，
+    因此优先通过 IP 反查正确网卡。
+    """
+    try:
+        ps_cmd = (
+            f"Get-NetIPAddress -AddressFamily IPv4 -IPAddress '{local_ip}' "
+            f"| Get-NetAdapter | Select -ExpandProperty MacAddress"
+        )
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NoLogo", "-Command", ps_cmd],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            mac = result.stdout.strip().replace("-", ":").upper()
+            # 验证格式: XX:XX:XX:XX:XX:XX (17 字符，5 个冒号)
+            if len(mac) == 17 and mac.count(":") == 5:
+                return mac
+    except Exception:
+        pass
+    return ""
+
+
 class CquptClient:
     """CQUPT 校园网认证客户端"""
 
@@ -61,6 +91,47 @@ class CquptClient:
     def set_cached_params(self, params: Optional[dict]) -> None:
         """恢复缓存的网络参数 (从配置文件恢复，供跨会话注销使用)"""
         self._cached_params = params
+
+    @staticmethod
+    def build_local_network_params() -> dict:
+        """
+        从本机系统信息构造网络参数（兜底方案）
+
+        当已处于认证状态时，校园网强制门户不会触发 302 重定向，
+        无法通过 get_network_params() 获取参数。但注销请求实际只需要
+        wlan_user_ip 和 wlan_user_mac（wlan_ac_ip/wlan_ac_name 固定为空），
+        这两个值均可从本机获取，无需依赖网络劫持。
+
+        返回:
+            {"wlanuserip": ..., "mac": ..., "wlanacname": "", "wlanacip": ""}
+        """
+        # 获取本机 IP：通过 UDP 连接到网关地址来确定出口网卡的 IP
+        local_ip = "0.0.0.0"
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(2)
+            # 不需要真正发送数据，只是让系统选择出口网卡
+            s.connect(("192.168.200.2", 801))
+            local_ip = s.getsockname()[0]
+            s.close()
+        except Exception:
+            pass
+
+        # 获取本机 MAC 地址 — 优先通过 IP 反查网卡（避免 uuid.getnode()
+        # 在 Hyper‑V/VPN 等虚拟网卡环境下返回错误的 MAC）
+        mac = _get_mac_for_ip(local_ip)
+        if not mac:
+            mac_int = uuid.getnode()
+            mac = ":".join(
+                f"{(mac_int >> (8 * i)) & 0xFF:02X}" for i in range(5, -1, -1)
+            )
+
+        return {
+            "wlanuserip": local_ip,
+            "wlanacname": "",
+            "wlanacip": "",
+            "mac": mac,
+        }
 
     def check_auth_status(self) -> str:
         """
@@ -253,7 +324,14 @@ class CquptClient:
             raise LoginError(f"不支持的运营商: {operator}")
 
         # 优先使用登录时缓存的参数 (在线状态下无法触发重定向)
-        net_params = self._cached_params or self.get_network_params()
+        net_params = self._cached_params
+        if not net_params:
+            try:
+                net_params = self.get_network_params()
+            except NetworkParamsError:
+                # 已认证状态下无法通过重定向获取参数，
+                # 使用本机 IP/MAC 构造参数作为兜底
+                net_params = self.build_local_network_params()
         dev = DEVICE_CONFIG[device]
 
         user_account = f",{dev['account_prefix']},{username}@{operator}"
