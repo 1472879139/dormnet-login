@@ -867,13 +867,14 @@ class CquptLoginGUI:
 
         elif status == "not_authenticated":
             if was_logged_in:
-                # 被踢掉或手动在浏览器注销了
-                self._apply_logged_out_state()
                 if allow_reconnect:
+                    # keep-alive 检测: 更新状态并自动重连
+                    self._apply_logged_out_state()
                     self._set_message("检测到已断开，正在自动重连...", "orange")
                     self._try_auto_reconnect()
                 else:
-                    self._set_message("已断开（手动刷新，未触发自动重连）", "orange")
+                    # 手动刷新: 仅提示，不改变 _is_logged_in，让 keep-alive 能继续重连
+                    self._set_message("检测到已断开（刷新仅查看，未改变状态）", "orange")
             else:
                 # 从 offline 恢复，或持续未认证
                 self._apply_logged_out_state()
