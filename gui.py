@@ -140,10 +140,10 @@ class CquptLoginGUI:
         self._root = tk.Tk()
         self._root.title("CQUPT 校园网登录工具")
         self._root.resizable(True, True)
-        self._root.minsize(420, 480)
+        self._root.minsize(460, 480)
 
         # 居中窗口
-        self._center_window(420, 540)
+        self._center_window(460, 540)
 
         # 窗口关闭事件
         self._root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -326,7 +326,16 @@ class CquptLoginGUI:
             variable=self._auto_start_var,
             command=self._on_auto_start_toggle,
         )
-        auto_start_cb.pack(anchor=tk.W, pady=(0, 4))
+        auto_start_cb.pack(anchor=tk.W, pady=(0, 2))
+
+        # 自动登录
+        self._auto_login_var = tk.BooleanVar()
+        auto_login_cb = ttk.Checkbutton(
+            settings_frame,
+            text="启动时自动登录（需配合开机自启）",
+            variable=self._auto_login_var,
+        )
+        auto_login_cb.pack(anchor=tk.W, pady=(0, 4))
 
         # 断线重连
         self._keep_alive_var = tk.BooleanVar()
@@ -407,6 +416,9 @@ class CquptLoginGUI:
         self._interval_var.set(
             str(self._config.get("keep_alive_interval", 300))
         )
+        self._auto_login_var.set(
+            self._config.get("auto_login", False)
+        )
 
     def _collect_config(self) -> dict:
         """从界面收集当前配置"""
@@ -440,6 +452,7 @@ class CquptLoginGUI:
             "keep_alive": self._keep_alive_var.get(),
             "keep_alive_interval": interval,
             "remember_password": self._remember_password_var.get(),
+            "auto_login": self._auto_login_var.get(),
         }
 
     # ------------------------------------------------------------------
@@ -491,7 +504,28 @@ class CquptLoginGUI:
             self._status_text.set("未认证")
             self._login_button.configure(state=tk.NORMAL)
             self._logout_button.configure(state=tk.DISABLED)
-            self._set_message("未登录认证，请点击登录", "gray")
+
+            # 自动登录
+            if self._config.get("auto_login", False):
+                creds = self._config_mgr.load_credentials()
+                if creds.get("username") and creds.get("password"):
+                    self._set_message("正在自动登录...", "blue")
+                    self._is_logging = True
+                    thread = threading.Thread(
+                        target=self._do_auto_login_startup,
+                        args=(
+                            creds["username"], creds["password"],
+                            creds.get("device", "mobile"),
+                            creds.get("operator", "telecom"),
+                        ),
+                        daemon=True,
+                    )
+                    thread.start()
+                    return
+                else:
+                    self._set_message("自动登录已开启但未保存凭据，请手动登录", "orange")
+            else:
+                self._set_message("未登录认证，请点击登录", "gray")
 
         else:  # offline
             self._is_logged_in = False
@@ -968,6 +1002,47 @@ class CquptLoginGUI:
     def _on_keep_alive_reconnect(self, message: str):
         """断线自动重连成功回调"""
         self._apply_logged_in_state("断线已自动重连", "green")
+
+    def _do_auto_login_startup(self, username, password, device, operator):
+        """后台执行启动时自动登录"""
+        try:
+            # 确认仍需登录（可能在此期间网络状态变化）
+            if self._client.check_auth_status() == "authenticated":
+                self._root.after(0, self._apply_logged_in_state,
+                                "网络已认证，无需重复登录", "green")
+                self._root.after(0, self._set_is_logging_false)
+                return
+        except Exception:
+            pass
+
+        try:
+            message = self._client.login(
+                username=username,
+                password=password,
+                device=device,
+                operator=operator,
+            )
+            self._root.after(0, self._on_auto_login_success, message)
+        except LoginError as e:
+            self._root.after(0, self._on_auto_login_failed, str(e))
+
+    def _on_auto_login_success(self, message: str):
+        """自动登录成功回调"""
+        self._is_logging = False
+        self._apply_logged_in_state("启动时自动登录成功", "green")
+        self._show_popup("自动登录成功", message, "success")
+
+    def _on_auto_login_failed(self, error: str):
+        """自动登录失败回调"""
+        self._is_logging = False
+        self._draw_status_dot("red")
+        self._status_text.set("○ 连接失败")
+        self._login_button.configure(state=tk.NORMAL)
+        self._set_message(f"自动登录失败: {error}，请手动登录", "red")
+
+    def _set_is_logging_false(self):
+        """重置 _is_logging 标志（供 auto_login 等路径复用）"""
+        self._is_logging = False
 
     def _stop_keep_alive(self):
         """停止断线重连定时器"""

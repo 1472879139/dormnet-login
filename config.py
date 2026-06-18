@@ -63,4 +63,5 @@ DEFAULT_CONFIG = {
     "keep_alive": True,
     "keep_alive_interval": 300,  # 断线重连间隔 (秒), 默认 5 分钟
     "remember_password": True,   # 默认记住密码，升级用户行为不变
+    "auto_login": False,         # 启动时自动登录（需配合开机自启使用）
 }
