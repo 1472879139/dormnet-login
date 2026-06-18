@@ -132,6 +132,7 @@ class CquptLoginGUI:
         self._is_logging = False       # 正在登录/注销中，防止重复点击
         self._keep_alive_job: Optional[str] = None  # after() job ID
         self._startup_auth_checked = False  # 启动认证检测是否完成
+        self._auto_login_tried = False     # 自动登录是否已尝试（避免反复重试）
 
         # 加载配置
         self._config = self._config_mgr.load()
@@ -140,10 +141,10 @@ class CquptLoginGUI:
         self._root = tk.Tk()
         self._root.title("CQUPT 校园网登录工具")
         self._root.resizable(True, True)
-        self._root.minsize(460, 540)
+        self._root.minsize(460, 500)
 
-        # 居中窗口
-        self._center_window(460, 590)
+        # 居中窗口（默认打开尺寸）
+        self._center_window(460, 570)
 
         # 窗口关闭事件
         self._root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -508,26 +509,9 @@ class CquptLoginGUI:
             self._logout_button.configure(state=tk.DISABLED)
 
             # 自动登录
-            if self._config.get("auto_login", False):
-                creds = self._config_mgr.load_credentials()
-                if creds.get("username") and creds.get("password"):
-                    self._set_message("正在自动登录...", "blue")
-                    self._is_logging = True
-                    thread = threading.Thread(
-                        target=self._do_auto_login_startup,
-                        args=(
-                            creds["username"], creds["password"],
-                            creds.get("device", "mobile"),
-                            creds.get("operator", "telecom"),
-                        ),
-                        daemon=True,
-                    )
-                    thread.start()
-                    return
-                else:
-                    self._set_message("自动登录已开启但未保存凭据，请手动登录", "orange")
-            else:
-                self._set_message("未登录认证，请点击登录", "gray")
+            if self._try_auto_login():
+                return
+            self._set_message("未登录认证，请点击登录", "gray")
 
         else:  # offline
             self._is_logged_in = False
@@ -914,6 +898,8 @@ class CquptLoginGUI:
             else:
                 # 从 offline 恢复，或持续未认证
                 self._apply_logged_out_state()
+                if self._try_auto_login():
+                    return
                 self._set_message("未登录认证，请点击登录", "gray")
 
         else:  # offline
@@ -1004,6 +990,38 @@ class CquptLoginGUI:
     def _on_keep_alive_reconnect(self, message: str):
         """断线自动重连成功回调"""
         self._apply_logged_in_state("断线已自动重连", "green")
+
+    def _try_auto_login(self) -> bool:
+        """尝试自动登录，返回 True 表示已触发。
+
+        由启动检测和 keep-alive 检测到 not_authenticated 且有 auto_login 配置时调用。
+        _auto_login_tried 防止反复重试。
+        """
+        if not self._config.get("auto_login", False):
+            return False
+        if self._auto_login_tried:
+            return False
+
+        creds = self._config_mgr.load_credentials()
+        if not creds.get("username") or not creds.get("password"):
+            self._set_message("自动登录已开启但未保存凭据，请手动登录", "orange")
+            self._auto_login_tried = True
+            return False
+
+        self._auto_login_tried = True
+        self._set_message("正在自动登录...", "blue")
+        self._is_logging = True
+        thread = threading.Thread(
+            target=self._do_auto_login_startup,
+            args=(
+                creds["username"], creds["password"],
+                creds.get("device", "mobile"),
+                creds.get("operator", "telecom"),
+            ),
+            daemon=True,
+        )
+        thread.start()
+        return True
 
     def _do_auto_login_startup(self, username, password, device, operator):
         """后台执行启动时自动登录"""
