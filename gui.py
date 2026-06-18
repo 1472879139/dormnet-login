@@ -140,10 +140,10 @@ class CquptLoginGUI:
         self._root = tk.Tk()
         self._root.title("CQUPT 校园网登录工具")
         self._root.resizable(True, True)
-        self._root.minsize(460, 480)
+        self._root.minsize(460, 540)
 
         # 居中窗口
-        self._center_window(460, 540)
+        self._center_window(460, 590)
 
         # 窗口关闭事件
         self._root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -291,9 +291,11 @@ class CquptLoginGUI:
             status_frame,
             textvariable=self._message_var,
             foreground="gray",
-            wraplength=360,
         )
         self._message_label.pack(side=tk.BOTTOM, fill=tk.X, pady=(4, 0))
+        # 消息文字自适应窗口宽度
+        self._message_label.bind("<Configure>", lambda e: self._message_label.configure(
+            wraplength=self._message_label.winfo_width() - 4))
 
         # ---- 操作按钮 ----
         button_frame = ttk.Frame(main_frame)
@@ -332,7 +334,7 @@ class CquptLoginGUI:
         self._auto_login_var = tk.BooleanVar()
         auto_login_cb = ttk.Checkbutton(
             settings_frame,
-            text="启动时自动登录（需配合开机自启）",
+            text="自动登录",
             variable=self._auto_login_var,
         )
         auto_login_cb.pack(anchor=tk.W, pady=(0, 4))
