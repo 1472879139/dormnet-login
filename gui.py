@@ -281,15 +281,6 @@ class CquptLoginGUI:
             font=("Microsoft YaHei UI", 10),
         ).pack(side=tk.LEFT)
 
-        # 倒计时
-        self._countdown_var = tk.StringVar(value="")
-        self._countdown_label = ttk.Label(
-            status_frame,
-            textvariable=self._countdown_var,
-            foreground="gray",
-        )
-        self._countdown_label.pack(side=tk.RIGHT, padx=(4, 0))
-
         # 刷新按钮
         self._refresh_button = ttk.Button(
             status_frame,
@@ -374,6 +365,15 @@ class CquptLoginGUI:
             width=6,
         )
         interval_entry.pack(side=tk.LEFT)
+
+        # 倒计时
+        self._countdown_var = tk.StringVar(value="")
+        self._countdown_label = ttk.Label(
+            keep_alive_frame,
+            textvariable=self._countdown_var,
+            foreground="gray",
+        )
+        self._countdown_label.pack(side=tk.RIGHT, padx=(12, 0))
 
         # 保存设置按钮
         ttk.Button(
@@ -741,7 +741,7 @@ class CquptLoginGUI:
         existing.update(config)
         self._config_mgr.save(existing)
         self._config = existing
-        self._set_message("💾 设置已保存", "gray")
+        self._show_popup("保存成功", "设置已保存", "success")
 
         # 同步 keep-alive 状态
         if config["keep_alive"]:
@@ -929,6 +929,8 @@ class CquptLoginGUI:
         elif status == "not_authenticated":
             if was_logged_in:
                 self._actually_disconnected = True
+                self._draw_status_dot("orange")
+                self._status_text.set("认证已断开")
                 self._set_message(
                     "认证已断开，正在等待断线重连中，"
                     "若想立即重连，请退出程序重启或点击注销",
