@@ -465,8 +465,11 @@ class CquptClient:
         将服务器原始错误信息 Decode 并映射为用户友好的中文提示
 
         服务器返回的错误信息为 Base64 编码，解码后按关键词匹配:
-          - "userid"     → 账号不存在
-          - "ldap/auth"  → 密码错误
+          - "userid"         → 账号不存在
+          - "ldap/auth"      → 密码错误
+          - "operator"       → 运营商选择错误
+          - "account"        → 账号异常（含运营商/套餐不匹配）
+          - "product"        → 套餐/产品状态异常
         """
         if not raw_msg:
             return ""
@@ -492,6 +495,12 @@ class CquptClient:
             return "账号不存在，请检查学号是否正确"
         if "ldap" in decoded_lower or "auth" in decoded_lower:
             return "密码错误，请检查密码是否正确"
+        if "operator" in decoded_lower:
+            return "运营商选择错误，请检查运营商设置"
+        if "account" in decoded_lower:
+            return f"账号异常: {decoded}"
+        if "product" in decoded_lower:
+            return f"套餐状态异常: {decoded}"
 
         # 未知错误: 返回解码后的内容 (比原始 Base64 更可读)
         return decoded if decoded != raw_msg else raw_msg

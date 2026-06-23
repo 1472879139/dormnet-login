@@ -133,6 +133,7 @@ class CquptLoginGUI:
         self._keep_alive_job: Optional[str] = None  # after() job ID
         self._startup_auth_checked = False  # 启动认证检测是否完成
         self._auto_login_tried = False     # 自动登录是否已尝试（避免反复重试）
+        self._actually_disconnected = False  # GUI 认为已登录但实际已断开（浏览器注销等）
 
         # 加载配置
         self._config = self._config_mgr.load()
@@ -537,11 +538,9 @@ class CquptLoginGUI:
         self._root.after(0, self._on_refresh_done, status)
 
     def _on_refresh_done(self, status: str):
-        """刷新完成回调 — 仅查看状态，不触发自动重连"""
+        """刷新完成回调 — 更新 UI 状态但不触发自动重连"""
         self._refresh_button.configure(state=tk.NORMAL, text="刷新")
-        # allow_reconnect=False: 刷新只是查看，不干预
         self._on_status_update(status, allow_reconnect=False)
-        self._set_message(f"刷新完成 ({self._status_text.get()})", "gray")
 
     def _on_login(self):
         """点击登录按钮"""
@@ -640,6 +639,12 @@ class CquptLoginGUI:
     def _on_logout(self):
         """点击注销按钮"""
         if self._is_logging:
+            return
+
+        # 状态不一致时（浏览器注销等），实际已是注销状态，只重置 UI
+        if self._actually_disconnected:
+            self._apply_logged_out_state()
+            self._set_message("UI 状态已重置，可重新登录", "gray")
             return
 
         username = self._username_var.get().strip()
@@ -872,21 +877,22 @@ class CquptLoginGUI:
 
         if status == "authenticated":
             if was_logged_in:
-                # 一切正常，无需操作
+                # 一切正常，清除不一致标志
+                self._actually_disconnected = False
                 return
             # 检测到已认证但 GUI 认为未登录：可能被浏览器/其他设备登录了
             self._apply_logged_in_state("检测到已认证状态，无需重复登录", "green")
 
         elif status == "not_authenticated":
             if was_logged_in:
+                self._actually_disconnected = True
+                self._set_message(
+                    "认证已断开，正在等待断线重连中，"
+                    "若想立即重连，请退出程序重启或点击注销",
+                    "orange",
+                )
                 if allow_reconnect:
-                    # keep-alive 检测: 更新状态并自动重连
-                    self._apply_logged_out_state()
-                    self._set_message("检测到已断开，正在自动重连...", "orange")
                     self._try_auto_reconnect()
-                else:
-                    # 手动刷新: 仅提示，不改变 _is_logged_in，让 keep-alive 能继续重连
-                    self._set_message("检测到已断开（刷新仅查看，未改变状态）", "orange")
             else:
                 # 从 offline 恢复，或持续未认证
                 self._apply_logged_out_state()
@@ -924,6 +930,8 @@ class CquptLoginGUI:
         if params:
             self._config_mgr.save_network_params(params)
 
+        self._actually_disconnected = False
+
     def _apply_logged_out_state(self):
         """将 GUI 切换到未登录状态，恢复输入控件可编辑"""
         self._is_logged_in = False
@@ -936,6 +944,7 @@ class CquptLoginGUI:
         self._device_combo.configure(state="readonly")
         self._operator_combo.configure(state="readonly")
         self._remember_password_cb.configure(state=tk.NORMAL)
+        self._actually_disconnected = False
 
     def _try_auto_reconnect(self):
         """后台尝试自动重连 (仅在之前已登录、检测到断线时调用)"""
