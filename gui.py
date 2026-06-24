@@ -135,6 +135,7 @@ class CquptLoginGUI:
         self._startup_auth_checked = False  # 启动认证检测是否完成
         self._auto_login_tried = False     # 自动登录是否已尝试（避免反复重试）
         self._actually_disconnected = False  # GUI 认为已登录但实际已断开（浏览器注销等）
+        self._has_ever_logged_in = False  # 是否曾通过本程序成功登录
         self._countdown_end: float = 0            # 下次 keep-alive 检测的绝对时间戳
         self._countdown_job: Optional[str] = None  # 1 秒倒计时 tick 的 after() ID
 
@@ -622,6 +623,7 @@ class CquptLoginGUI:
 
     def _on_login_success(self, message: str):
         """登录成功回调 (主线程)"""
+        self._has_ever_logged_in = True
         self._is_logged_in = True
         self._set_logging_state(False)
         self._draw_status_dot("green")
@@ -709,9 +711,13 @@ class CquptLoginGUI:
     def _on_logout_failed(self, error: str):
         """注销失败回调 (主线程)"""
         self._set_logging_state(False)
-        self._set_message(f"⚠ 注销失败: {error}", "orange")
-
-        self._show_popup("注销失败", error, "warning")
+        if not self._has_ever_logged_in:
+            friendly = "缺少网络参数，请先通过本程序登录一次后再注销"
+            self._set_message(f"⚠ 注销失败: {friendly}", "orange")
+            self._show_popup("注销失败", friendly, "warning")
+        else:
+            self._set_message(f"⚠ 注销失败: {error}", "orange")
+            self._show_popup("注销失败", error, "warning")
 
     def _on_auto_start_toggle(self):
         """开机自启开关切换"""

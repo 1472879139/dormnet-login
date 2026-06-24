@@ -495,7 +495,7 @@ class CquptClient:
             return "账号不存在，请检查学号是否正确"
         if "ldap" in decoded_lower or "auth" in decoded_lower:
             return "密码错误，请检查密码是否正确"
-        if "operator" in decoded_lower:
+        if "operator" in decoded_lower or "isp" in decoded_lower or "unbind" in decoded_lower:
             return "运营商选择错误，请检查运营商设置"
         if "account" in decoded_lower:
             return f"账号异常: {decoded}"
