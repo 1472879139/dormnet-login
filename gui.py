@@ -23,6 +23,9 @@ from .config_manager import ConfigManager
 from .autostart import AutoStartManager
 from .config import DEVICE_CONFIG, OPERATOR_MAP
 
+DEFAULT_KEEP_ALIVE_INTERVAL = 300
+MIN_KEEP_ALIVE_INTERVAL = 30
+
 # 设备类型显示标签列表 (顺序与 combo 一致)
 DEVICE_LABELS = [cfg["label"] for cfg in DEVICE_CONFIG.values()]
 DEVICE_KEYS = list(DEVICE_CONFIG.keys())
@@ -455,14 +458,10 @@ class CquptLoginGUI:
                 operator_key = key
                 break
 
-        try:
-            interval = int(self._interval_var.get())
-        except ValueError:
-            interval = 300
+        interval = self._parse_keep_alive_interval(self._interval_var.get())
 
         return {
             "username": self._username_var.get().strip(),
-            "password": self._password_var.get(),
             "device": device_key,
             "operator": operator_key,
             "auto_start": self._auto_start_var.get(),
@@ -471,6 +470,17 @@ class CquptLoginGUI:
             "remember_password": self._remember_password_var.get(),
             "auto_login": self._auto_login_var.get(),
         }
+
+    @staticmethod
+    def _parse_keep_alive_interval(value: str) -> int:
+        """解析断线重连间隔，避免 0/负数造成 after() 高频循环。"""
+        try:
+            interval = int(str(value).strip())
+        except (TypeError, ValueError):
+            return DEFAULT_KEEP_ALIVE_INTERVAL
+        if interval <= 0:
+            return DEFAULT_KEEP_ALIVE_INTERVAL
+        return max(interval, MIN_KEEP_ALIVE_INTERVAL)
 
     # ------------------------------------------------------------------
     # 事件处理
@@ -494,21 +504,20 @@ class CquptLoginGUI:
             self._status_text.set("● 已连接")
             self._login_button.configure(state=tk.DISABLED)
 
-            # 已登录时禁用账号字段，注销后才能编辑
-            self._username_entry.configure(state=tk.DISABLED)
-            self._password_entry.configure(state=tk.DISABLED)
-            self._device_combo.configure(state="disabled")
-            self._operator_combo.configure(state="disabled")
-            self._remember_password_cb.configure(state=tk.DISABLED)
-
             # 尝试恢复缓存的网络参数，使注销按钮可用
             params = self._config_mgr.load_network_params()
             if not params:
                 # 无缓存时用本机 IP/MAC 构造兜底参数（注销只需要这两个值）
                 params = self._client.build_local_network_params()
             self._client.set_cached_params(params)
-            self._logout_button.configure(state=tk.NORMAL)
-            self._set_message("检测到已认证状态，可直接注销", "green")
+            self._set_logged_in_controls()
+            if self._has_entered_credentials():
+                self._set_message("检测到已认证状态，可直接注销", "green")
+            else:
+                self._set_message(
+                    "检测到已认证状态，请输入账号和密码后注销",
+                    "orange",
+                )
 
         elif status == "not_authenticated":
             self._is_logged_in = False
@@ -663,6 +672,11 @@ class CquptLoginGUI:
 
         username = self._username_var.get().strip()
         password = self._password_var.get()
+        if not username or not password:
+            message = "请输入账号和密码后再注销"
+            self._set_message(f"⚠ {message}", "orange")
+            self._show_popup("提示", message, "warning")
+            return
         config = self._collect_config()
 
         self._set_logging_state(True)
@@ -711,7 +725,12 @@ class CquptLoginGUI:
     def _on_logout_failed(self, error: str):
         """注销失败回调 (主线程)"""
         self._set_logging_state(False)
-        if not self._has_ever_logged_in:
+        looks_like_param_error = (
+            "网络参数" in error
+            or "重定向参数" in error
+            or "wlan" in error.lower()
+        )
+        if not self._has_ever_logged_in and looks_like_param_error:
             friendly = "缺少网络参数，请先通过本程序登录一次后再注销"
             self._set_message(f"⚠ 注销失败: {friendly}", "orange")
             self._show_popup("注销失败", friendly, "warning")
@@ -724,6 +743,10 @@ class CquptLoginGUI:
         enabled = self._auto_start_var.get()
         success = self._autostart.set_enabled(enabled)
         if success:
+            existing = self._config_mgr.load()
+            existing["auto_start"] = enabled
+            self._config_mgr.save(existing)
+            self._config = existing
             self._set_message(
                 f"已{'启用' if enabled else '禁用'}开机自启",
                 "gray",
@@ -745,6 +768,8 @@ class CquptLoginGUI:
         # 合并已有配置以保留内部字段（如 cached_network_params）
         existing = self._config_mgr.load()
         existing.update(config)
+        # 密码只能通过 save_credentials() 加密保存；普通设置保存时清理旧明文字段
+        existing.pop("password", None)
         self._config_mgr.save(existing)
         self._config = existing
         self._show_popup("保存成功", "设置已保存", "success")
@@ -817,6 +842,28 @@ class CquptLoginGUI:
         self._message_var.set(text)
         if self._message_label is not None:
             self._message_label.configure(foreground=color)
+
+    def _has_entered_credentials(self) -> bool:
+        """当前界面是否有注销所需的账号和密码。"""
+        return bool(self._username_var.get().strip() and self._password_var.get())
+
+    def _set_logged_in_controls(self):
+        """根据凭据是否完整设置已登录时的控件状态。"""
+        has_credentials = self._has_entered_credentials()
+        self._login_button.configure(state=tk.DISABLED)
+        self._logout_button.configure(state=tk.NORMAL)
+        if has_credentials:
+            self._username_entry.configure(state=tk.DISABLED)
+            self._password_entry.configure(state=tk.DISABLED)
+            self._device_combo.configure(state="disabled")
+            self._operator_combo.configure(state="disabled")
+            self._remember_password_cb.configure(state=tk.DISABLED)
+        else:
+            self._username_entry.configure(state=tk.NORMAL)
+            self._password_entry.configure(state=tk.NORMAL)
+            self._device_combo.configure(state="readonly")
+            self._operator_combo.configure(state="readonly")
+            self._remember_password_cb.configure(state=tk.NORMAL)
 
     def _draw_status_dot(self, color: str):
         """在 status canvas 上绘制状态圆点"""
@@ -963,13 +1010,10 @@ class CquptLoginGUI:
         self._is_logged_in = True
         self._draw_status_dot("green")
         self._status_text.set("● 已连接")
-        self._login_button.configure(state=tk.DISABLED)
-        self._logout_button.configure(state=tk.NORMAL)
-        self._username_entry.configure(state=tk.DISABLED)
-        self._password_entry.configure(state=tk.DISABLED)
-        self._device_combo.configure(state="disabled")
-        self._operator_combo.configure(state="disabled")
-        self._remember_password_cb.configure(state=tk.DISABLED)
+        self._set_logged_in_controls()
+        if not self._has_entered_credentials():
+            message = "检测到已认证状态，请输入账号和密码后注销"
+            color = "orange"
         self._set_message(message, color)
 
         # 更新缓存的网络参数
@@ -1037,6 +1081,7 @@ class CquptLoginGUI:
 
     def _on_keep_alive_reconnect(self, message: str):
         """断线自动重连成功回调"""
+        self._has_ever_logged_in = True
         self._apply_logged_in_state("断线已自动重连", "green")
 
     def _try_auto_login(self) -> bool:
@@ -1097,6 +1142,7 @@ class CquptLoginGUI:
     def _on_auto_login_success(self, message: str):
         """自动登录成功回调"""
         self._is_logging = False
+        self._has_ever_logged_in = True
         self._apply_logged_in_state("启动时自动登录成功", "green")
         self._show_popup("自动登录成功", message, "success")
 

@@ -48,14 +48,14 @@ class AutoStartManager:
             # PyInstaller 打包后，sys.executable 就是 exe 本身
             return sys.executable
         else:
-            # Python 脚本模式：python.exe + main.py
+            # Python 脚本模式：python.exe + run.py
             return sys.executable
 
     @classmethod
     def _get_script_path(cls) -> str:
-        """获取主程序入口路径"""
+        """获取源码模式启动入口路径"""
         this_dir = os.path.dirname(os.path.abspath(__file__))
-        return os.path.join(this_dir, "main.py")
+        return os.path.join(this_dir, "run.py")
 
     @classmethod
     def _build_launch_command(cls) -> str:
@@ -75,7 +75,7 @@ class AutoStartManager:
                 f'0, False'
             )
         else:
-            # Python 脚本模式：用 python.exe 运行 main.py
+            # Python 脚本模式：用 python.exe 运行 run.py
             python_path = sys.executable
             script_path = cls._get_script_path()
             return (

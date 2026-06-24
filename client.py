@@ -19,7 +19,6 @@ import urllib.request
 import urllib.error
 import urllib.parse
 import uuid
-from http.client import HTTPResponse
 from typing import Optional
 
 from .config import (
