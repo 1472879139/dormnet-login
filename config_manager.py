@@ -3,8 +3,9 @@
 
 配置文件位置: %APPDATA%/dormnet_login/config.json
 
-密码存储: 使用机器特征 (MAC 地址) 派生的密钥进行加密，非明文存储。
-         更换硬件或复制配置文件到其他电脑会导致密码无法解密，需重新输入。
+密码存储: 使用 Windows MachineGuid 派生的密钥进行加密，非明文存储。
+         MachineGuid 是系统安装时生成的唯一标识，不随网卡变化。
+         更换系统或复制配置文件到其他电脑会导致密码无法解密，需重新输入。
 """
 
 import base64
@@ -13,6 +14,7 @@ import json
 import os
 import secrets
 import uuid
+import winreg
 from typing import Any, Optional
 
 from .config import DEFAULT_CONFIG
@@ -36,16 +38,34 @@ class ConfigManager:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _derive_key(salt: bytes) -> bytes:
-        """基于本机特征 + 随机盐派生 32 字节加密密钥"""
-        machine_id = str(uuid.getnode()).encode()
+    def _get_machine_id() -> str:
+        """获取稳定的机器标识
+
+        优先读取 Windows 注册表中的 MachineGuid (系统安装时生成，永不改变)，
+        无法获取时回退到 uuid.getnode() (网卡 MAC)。
+        """
+        try:
+            key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SOFTWARE\Microsoft\Cryptography",
+            )
+            guid, _ = winreg.QueryValueEx(key, "MachineGuid")
+            winreg.CloseKey(key)
+            return guid
+        except Exception:
+            return str(uuid.getnode())
+
+    @staticmethod
+    def _derive_key(salt: bytes, machine_id: bytes) -> bytes:
+        """基于机器标识 + 盐值派生 32 字节加密密钥"""
         return hashlib.sha256(salt + machine_id + _KEY_SALT).digest()
 
     @classmethod
     def _encrypt_password(cls, plaintext: str) -> str:
         """加密密码，返回 base64 字符串"""
         salt = secrets.token_bytes(16)
-        key = cls._derive_key(salt)
+        machine_id = cls._get_machine_id().encode()
+        key = cls._derive_key(salt, machine_id)
         plain_bytes = plaintext.encode("utf-8")
 
         # XOR 加密 (密钥循环使用)
@@ -66,10 +86,11 @@ class ConfigManager:
 
             salt = raw[:16]
             cipher_bytes = raw[16:]
-            key = cls._derive_key(salt)
+            key = cls._derive_key(salt, cls._get_machine_id().encode())
 
             plain_bytes = bytes(
-                cipher_bytes[i] ^ key[i % len(key)] for i in range(len(cipher_bytes))
+                cipher_bytes[i] ^ key[i % len(key)]
+                for i in range(len(cipher_bytes))
             )
             return plain_bytes.decode("utf-8")
         except Exception:

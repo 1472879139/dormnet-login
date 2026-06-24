@@ -58,7 +58,7 @@ Device parameters are defined in `config.py` → `DEVICE_CONFIG`. The `callback`
 
 - **Threading model** — All HTTP calls run on daemon threads to avoid blocking the tkinter event loop. Results are dispatched back to the main thread via `root.after()`.
 
-- **Config location** — `%APPDATA%/dormnet_login/config.json`. Password is encrypted using a key derived from the machine's MAC address (SHA-256 + XOR). `ConfigManager.load()` always merges with `DEFAULT_CONFIG` so new config keys are automatically populated on upgrade. Old plaintext `password` keys are auto-migrated to `encrypted_password` on next save.
+- **Config location** — `%APPDATA%/dormnet_login/config.json`. Password is encrypted using a key derived from the Windows MachineGuid registry value (SHA-256 + XOR). MachineGuid is generated once during OS installation and never changes, avoiding the instability of MAC-based derivation across multiple network adapters. `ConfigManager.load()` always merges with `DEFAULT_CONFIG` so new config keys are automatically populated on upgrade. Old plaintext `password` keys are auto-migrated to `encrypted_password` on next save.
 
 - **Autostart mechanism** — A `.vbs` script in the Windows Startup folder (`%APPDATA%/Microsoft/Windows/Start Menu/Programs/Startup/`). The VBS approach (vs. registry `Run` key) is chosen so the entry is visible in Task Manager → Startup. When running as a frozen exe, the VBS launches the exe directly; when running from source, it launches `python.exe main.py --silent`.
 
