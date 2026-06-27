@@ -28,6 +28,9 @@ from .config import (
     OPERATOR_MAP,
     REQUEST_TIMEOUT,
 )
+from .logger import get_logger, sanitize_url
+
+log = get_logger(__name__)
 
 
 class LoginError(Exception):
@@ -144,25 +147,35 @@ class CquptClient:
             "not_authenticated" - 未认证 (触发 302 重定向，在校园网内但未登录)
             "offline"           - 不在校园网环境 (所有探测地址均网络错误)
         """
+        # 状态检测使用较短超时（3 秒），避免无网络时每个探测地址等满 10 秒
+        probe_timeout = min(self._timeout, 3)
         saw_redirect = False
 
         for probe_url in PROBE_URLS:
             req = urllib.request.Request(probe_url, method="GET")
             opener = urllib.request.build_opener(_NoRedirectHandler)
             try:
-                opener.open(req, timeout=self._timeout)
+                opener.open(req, timeout=probe_timeout)
                 # 请求直接成功 = 无拦截 = 已认证
+                log.debug("探测 %s → 200 OK (已认证)", probe_url)
                 return "authenticated"
             except urllib.error.HTTPError as e:
                 if e.code in (301, 302, 303, 307, 308):
                     saw_redirect = True
+                    loc = e.headers.get("Location", "")
+                    log.debug("探测 %s → %d (重定向: %s)", probe_url, e.code, loc[:120])
+                else:
+                    log.debug("探测 %s → HTTP %d", probe_url, e.code)
                 # 继续探测下一个地址
             except urllib.error.URLError:
+                log.debug("探测 %s → 不可达", probe_url)
                 # 该探测地址不可达，继续下一个
                 continue
 
         # 所有探测结束: 看到过重定向 = 在校园网内但未认证; 否则 = 离线
-        return "not_authenticated" if saw_redirect else "offline"
+        result = "not_authenticated" if saw_redirect else "offline"
+        log.info("认证状态检测: %s", result)
+        return result
 
     def get_network_params(self) -> dict:
         """
@@ -175,6 +188,7 @@ class CquptClient:
 
         抛出 NetworkParamsError: 如果无法获取参数
         """
+        log.debug("开始获取网络参数，探测地址: %s", PROBE_URLS)
         last_error = None
         saw_redirect = False  # 是否至少有一个探测地址触发了重定向
 
@@ -192,6 +206,7 @@ class CquptClient:
 
         # 所有探测地址均未触发重定向 → 很可能是 VPN/代理导致
         if not saw_redirect:
+            log.warning("所有探测地址均未触发重定向（可能 VPN/代理/未连接校园网）")
             raise NetworkParamsError(
                 "无法获取校园网认证参数。\n\n"
                 "所有探测地址均未触发校园网重定向，可能原因:\n"
@@ -223,15 +238,18 @@ class CquptClient:
             if e.code in (301, 302, 303, 307, 308):
                 location = e.headers.get("Location", "")
                 if location:
+                    log.info("探测 %s → 302, Location: %s", probe_url, location)
                     return self._parse_location(location)
 
             # 非重定向的 HTTP 错误 (如 502): 说明请求到达了外网但未被校园网拦截
             # 这也是"未触发重定向"的一种情况 (常见于 VPN/代理环境)
+            log.debug("探测 %s → HTTP %d (非重定向)", probe_url, e.code)
             raise NetworkParamsError(
                 f"探测 {probe_url} 返回 HTTP {e.code}"
             )
 
         except urllib.error.URLError as e:
+            log.debug("探测 %s → URLError: %s", probe_url, e.reason)
             raise NetworkParamsError(
                 f"无法连接探测地址 ({probe_url}): {e.reason}"
             )
@@ -262,9 +280,15 @@ class CquptClient:
         if operator not in OPERATOR_MAP:
             raise LoginError(f"不支持的运营商: {operator}")
 
+        log.info(
+            "登录请求: username=%s, device=%s, operator=%s",
+            username, device, operator,
+        )
+
         # 第一步: 获取网络参数 (优先复用缓存，避免因登录失败后重试时探测异常)
         if self._cached_params:
             net_params = self._cached_params
+            log.debug("使用缓存的网络参数")
         else:
             net_params = self.get_network_params()
             self._cached_params = net_params
@@ -322,6 +346,11 @@ class CquptClient:
         if operator not in OPERATOR_MAP:
             raise LoginError(f"不支持的运营商: {operator}")
 
+        log.info(
+            "注销请求: username=%s, device=%s, operator=%s",
+            username, device, operator,
+        )
+
         # 优先使用登录时缓存的参数 (在线状态下无法触发重定向)
         net_params = self._cached_params
         if not net_params:
@@ -330,6 +359,7 @@ class CquptClient:
             except NetworkParamsError:
                 # 已认证状态下无法通过重定向获取参数，
                 # 使用本机 IP/MAC 构造参数作为兜底
+                log.info("无法通过重定向获取参数，使用本机 IP/MAC 兜底")
                 net_params = self.build_local_network_params()
         dev = DEVICE_CONFIG[device]
 
@@ -367,12 +397,14 @@ class CquptClient:
             # 网络层错误（超时、连接重置等）：注销请求可能已被服务器处理，
             # 但响应未到达客户端。通过检测认证状态确认实际结果，
             # 避免"实际注销成功却提示失败"的误报。
+            log.warning("注销网络错误，通过状态检测确认实际结果")
             try:
                 status = self.check_auth_status()
                 if status != "authenticated":
+                    log.info("注销成功（服务器无响应，状态检测确认已断开）")
                     return "注销成功（服务器无响应，已通过状态检测确认）"
             except Exception:
-                pass
+                log.debug("注销后状态检测失败，忽略", exc_info=True)
             raise
 
     # ------------------------------------------------------------------
@@ -398,10 +430,18 @@ class CquptClient:
 
         missing = [k for k, v in params.items() if not v]
         if missing:
+            log.error(
+                "重定向参数不完整: 缺少 %s, Location=%s",
+                ", ".join(missing), location,
+            )
             raise NetworkParamsError(
                 f"网关重定向参数不完整，缺少: {', '.join(missing)}"
             )
 
+        log.info(
+            "网络参数获取成功: wlanuserip=%s, mac=%s",
+            params["wlanuserip"], params["mac"],
+        )
         return params
 
     def _do_request(
@@ -422,12 +462,19 @@ class CquptClient:
         for key, value in headers.items():
             req.add_header(key, value)
 
+        log.debug("%s请求: %s", operation, sanitize_url(full_url))
+
         try:
             with urllib.request.urlopen(req, timeout=self._timeout) as resp:
                 body = resp.read().decode("utf-8", errors="replace")
         except urllib.error.URLError as e:
+            log.error(
+                "%s失败: %s (URL: %s)",
+                operation, e.reason, sanitize_url(full_url),
+            )
             raise NetworkError(f"{operation}失败: 无法连接认证服务器 - {e.reason}")
         except Exception as e:
+            log.error("%s失败: %s", operation, e, exc_info=True)
             raise NetworkError(f"{operation}失败: {e}")
 
         return self._parse_response(body, operation)
@@ -435,7 +482,10 @@ class CquptClient:
     def _parse_response(self, body: str, operation: str) -> str:
         """解析 JSONP 响应，返回服务器消息"""
         if not body or len(body) <= 2:
+            log.error("%s失败: 服务器返回空响应", operation)
             raise LoginError(f"{operation}失败: 服务器返回空响应")
+
+        log.debug("%s响应: %s", operation, body[:200])
 
         # JSONP 格式: dr1003({...}) 或 dr1005({...})
         try:
@@ -445,6 +495,10 @@ class CquptClient:
 
             data = json.loads(json_str)
         except (json.JSONDecodeError, ValueError) as e:
+            log.error(
+                "%s失败: 无法解析响应 JSON, body=%s",
+                operation, body[:200],
+            )
             raise LoginError(
                 f"{operation}失败: 无法解析服务器响应\n响应内容: {body[:200]}"
             )
@@ -453,10 +507,16 @@ class CquptClient:
         message = data.get("msg", "")
 
         if result != "1":
+            friendly = self._friendly_error(message)
+            log.error(
+                "%s失败: result=%s, raw_msg=%s, friendly=%s",
+                operation, result, message, friendly,
+            )
             raise LoginError(
-                f"{operation}失败: {self._friendly_error(message) or '未知错误'}"
+                f"{operation}失败: {friendly or '未知错误'}"
             )
 
+        log.info("%s成功: %s", operation, message or "ok")
         return message or f"{operation}成功"
 
     def _friendly_error(self, raw_msg: str) -> str:

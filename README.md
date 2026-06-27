@@ -70,11 +70,16 @@ autostart.py        # 开机自启管理（Startup 文件夹 .vbs 脚本）
 gui.py              # tkinter 图形界面、多线程、断线重连
 main.py             # 程序入口
 run.py              # PyInstaller 打包入口
+logger.py           # 日志系统 — 按天轮转、自动清理、密码脱敏
 ```
+
+## 诊断
+
+日志文件位于 `%APPDATA%/dormnet_login/logs/app.log`。遇到问题时查看日志即可了解完整请求链路：探测地址、重定向 URL、网络参数、服务器响应、错误详情。密码在日志中自动脱敏。
 
 ## 配置存储
 
-配置文件保存在 `%APPDATA%/dormnet_login/config.json`。密码使用本机 MAC 地址派生的密钥加密存储，非明文保存。注意：更换硬件或复制配置文件到其他电脑会导致密码无法解密，需重新输入。删除该文件即可重置所有设置。
+配置文件保存在 `%APPDATA%/dormnet_login/config.json`。密码使用 Windows MachineGuid（注册表，系统安装时生成且永不改变）派生的密钥加密存储，非明文保存。注意：更换系统或复制配置文件到其他电脑会导致密码无法解密，需重新输入。删除该文件即可重置所有设置。
 
 ## License
 
